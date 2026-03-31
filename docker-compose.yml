@@ -1,0 +1,25 @@
+services:
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8080:8080"
+    volumes:
+      - llama-models:/root/.cache/llama.cpp
+    environment:
+      LLAMA_ARG_HF_REPO: "${LLAMA_MODEL_ID:-Qwen/Qwen3-8B-GGUF:Q4_K_M}"
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_REASONING_BUDGET: "0"
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+    mem_limit: 512m
+
+volumes:
+  llama-models:
+  qdrant-data:

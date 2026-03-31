@@ -1,0 +1,63 @@
+{
+  "name": "novel-writer-assistant",
+  "version": "1.0.0",
+  "description": "Writer assistant with book editing and knowledge tools",
+  "scripts": {
+    "dev": "concurrently -n next,docker,worker -c blue,yellow,magenta \"next dev --webpack\" \"docker compose up\" \"npx tsx --env-file=.env workers/story-context-worker.ts\"",
+    "dev:turbo": "concurrently -n next,docker,worker -c blue,yellow,magenta \"next dev\" \"docker compose up\" \"npx tsx --env-file=.env workers/story-context-worker.ts\"",
+    "dev:next": "next dev --webpack",
+    "dev:docker": "docker compose up",
+    "dev:worker": "npx tsx --env-file=.env workers/story-context-worker.ts",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "echo 'No tests specified'",
+    "add-admin": "node scripts/add-admin.js",
+    "change-password": "node scripts/change-password.js",
+    "change-role": "node scripts/change-role.js",
+    "list-users": "node scripts/list-users.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@prisma/client": "^6.13.0",
+    "@qdrant/js-client-rest": "^1.17.0",
+    "@tiptap/extension-font-family": "^3.14.0",
+    "@tiptap/extension-text-align": "^3.14.0",
+    "@tiptap/extension-text-style": "^3.14.0",
+    "@tiptap/html": "^3.14.0",
+    "@tiptap/react": "^3.14.0",
+    "@tiptap/starter-kit": "^3.14.0",
+    "adm-zip": "^0.5.16",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.3",
+    "iron-session": "^8.0.3",
+    "lucide-react": "^0.562.0",
+    "mammoth": "^1.12.0",
+    "mysql2": "^3.14.3",
+    "next": "16.1.0",
+    "pdf-parse": "^2.4.5",
+    "prisma": "^6.13.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.11",
+    "@types/adm-zip": "^0.5.8",
+    "@types/bcrypt": "^6.0.0",
+    "@types/node": "^24.2.0",
+    "@types/react": "19.2.7",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.11",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.2"
+  },
+  "overrides": {
+    "@types/react": "19.2.7"
+  }
+}

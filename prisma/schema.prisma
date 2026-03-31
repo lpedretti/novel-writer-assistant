@@ -1,0 +1,128 @@
+// Prisma schema for novel-writer-assistant
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMINISTRATOR
+  CREATOR
+  VIEWER
+}
+
+model User {
+  id                     Int            @id @default(autoincrement())
+  name                   String?
+  email                  String         @unique(map: "email")
+  password               String
+  role                   Role           @default(VIEWER)
+  active                 Boolean        @default(true)
+  emailVerified          Boolean        @default(false)
+  verificationToken      String?        @unique
+  verificationTokenExpiry DateTime?
+  resetToken             String?        @unique
+  resetTokenExpiry       DateTime?
+  books                  Book[]
+  archiveQueries         ArchiveQuery[] // Knowledge assistant queries
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @default(now()) @updatedAt
+}
+
+model Book {
+  id          Int       @id @default(autoincrement())
+  title       String
+  description String?  @db.Text
+  gender      String?
+  topic       String?
+  tags        Json?
+  styleConfig Json?     // Font config: h1Font, h2Font, h3Font, bodyFont, margins
+  user        User      @relation(fields: [userId], references: [id])
+  userId      Int
+  chapters          Chapter[]
+  archiveQueries    ArchiveQuery[]    // Knowledge assistant queries
+  sectionAnalyses   SectionAnalysis[] // Story context analyses
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @default(now()) @updatedAt
+}
+
+model Chapter {
+  id                     Int              @id @default(autoincrement())
+  title                  String
+  order                  Int
+  book                   Book             @relation(fields: [bookId], references: [id])
+  bookId                 Int
+  sections               ChapterSection[] // Rich text sections
+}
+
+model ChapterSection {
+  id        Int      @id @default(autoincrement())
+  title     String?  // Optional section title
+  content   Json     // Tiptap JSON format
+  order     Int      // Section ordering within chapter
+  chapter   Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  chapterId Int
+  archiveQueries ArchiveQuery[]   // Knowledge assistant queries
+  analysis       SectionAnalysis? // Story context analysis
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+
+  @@index([chapterId, order])
+}
+
+model CachedResponse {
+  id             Int      @id @default(autoincrement())
+  query          String   @db.Text
+  queryHash      String   @db.VarChar(64) @unique // SHA-256 of normalized query for exact dedup
+  locale         String   @default("en")
+  response       Json                             // Full KnowledgeResponse
+  searchableText String   @db.Text                // Flattened response for text search
+  refusal        Boolean  @default(false)
+  refusalReason  String?  @db.Text
+  hitCount       Int      @default(1)
+  createdAt      DateTime @default(now())
+
+  archiveQueries ArchiveQuery[]
+
+  @@fulltext([query, searchableText])
+}
+
+model ArchiveQuery {
+  id               Int              @id @default(autoincrement())
+  userId           Int
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookId           Int
+  book             Book             @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  sectionId        Int?
+  section          ChapterSection?  @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  cachedResponseId Int
+  cachedResponse   CachedResponse   @relation(fields: [cachedResponseId], references: [id], onDelete: Cascade)
+  originalQuery    String?          @db.Text
+  createdAt        DateTime         @default(now())
+
+  @@index([userId, bookId])
+  @@index([bookId, sectionId])
+}
+
+model SectionAnalysis {
+  id            Int            @id @default(autoincrement())
+  sectionId     Int            @unique
+  section       ChapterSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  bookId        Int
+  book          Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  contentHash   String         @db.VarChar(64)
+  plainText     String         @db.MediumText
+  extractedData Json
+  status        String         @default("pending") // pending | processing | completed | failed
+  errorMessage  String?        @db.Text
+  qdrantPointId String?        @db.VarChar(36)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @default(now()) @updatedAt
+
+  @@index([bookId, status])
+  @@index([contentHash])
+}
