@@ -38,3 +38,4 @@ next-env.d.ts
 /generated/prisma
 /public/uploads/*
 !public/uploads/.gitkeep
+CLAUDE.md
