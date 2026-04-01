@@ -1,0 +1,518 @@
+%% Novel Writer Assistant — Architecture Diagrams
+%% Render with: mmdc -i architecture.mmd -o architecture.png
+%% Or paste into https://mermaid.live
+
+%% ============================================================
+%% 1. SYSTEM OVERVIEW — How to run and what connects to what
+%% ============================================================
+%% npm run dev starts three concurrent processes:
+%%   [next]   — Next.js 16 dev server (port 3000)
+%%   [docker] — Docker Compose: Qdrant (port 6333) + llama.cpp (port 8080)
+%%   [worker] — Story context background worker (standalone Node.js)
+%%
+%% External dependency: MySQL 8 (must be running independently)
+%% ============================================================
+
+---
+title: "System Overview — npm run dev"
+---
+graph TB
+    subgraph "npm run dev (concurrently)"
+        NEXT["<b>[next]</b><br/>Next.js 16 + React 19<br/>port 3000<br/><i>next dev --webpack</i>"]
+        WORKER["<b>[worker]</b><br/>Story Context Worker<br/>standalone Node.js<br/><i>tsx workers/story-context-worker.ts</i>"]
+        DOCKER["<b>[docker]</b><br/>docker compose up"]
+    end
+
+    subgraph "Docker Compose Services"
+        QDRANT["<b>Qdrant v1.17</b><br/>Vector Database<br/>port 6333 (REST)<br/>port 6334 (gRPC)"]
+        LLAMA["<b>llama.cpp</b><br/>Local LLM Server<br/>port 8080<br/><i>only if LLM_PROVIDER=local</i>"]
+    end
+
+    MYSQL[("<b>MySQL 8</b><br/>Relational Database<br/>port 3306<br/><i>must be running independently</i>")]
+
+    LLM_REMOTE["<b>Remote LLM API</b><br/>OpenAI or Gemini<br/><i>if LLM_PROVIDER=openai|gemini</i>"]
+
+    DOCKER --> QDRANT
+    DOCKER --> LLAMA
+
+    NEXT -- "Prisma ORM" --> MYSQL
+    NEXT -- "@qdrant/js-client-rest" --> QDRANT
+    NEXT -- "fetch (OpenAI-compatible)" --> LLAMA
+    NEXT -- "fetch (provider API)" --> LLM_REMOTE
+
+    WORKER -- "Prisma ORM" --> MYSQL
+    WORKER -- "@qdrant/js-client-rest" --> QDRANT
+    WORKER -- "fetch" --> LLAMA
+    WORKER -- "fetch" --> LLM_REMOTE
+
+---
+title: "Technology Stack by Layer"
+---
+graph LR
+    subgraph "Frontend (Browser)"
+        REACT["React 19<br/>Server + Client Components"]
+        TIPTAP["TipTap 3<br/>Rich Text Editor"]
+        TAILWIND["TailwindCSS 4<br/>+ custom DaisyUI layer"]
+        LUCIDE["Lucide React<br/>Icons"]
+    end
+
+    subgraph "Backend (Next.js 16)"
+        RSC["React Server Components<br/>+ Server Actions"]
+        APIROUTES["API Routes<br/>app/api/*"]
+        IRON["iron-session<br/>Encrypted Cookie Auth"]
+        PRISMA["Prisma ORM<br/>@prisma/client"]
+        LLMCLIENT["lib/llm-client.ts<br/>Multi-provider LLM transport"]
+        EMBED["lib/embedding.ts<br/>@huggingface/transformers<br/>Xenova/all-MiniLM-L6-v2<br/>384-dim vectors"]
+    end
+
+    subgraph "Background Worker"
+        TSX["tsx runtime<br/>(TypeScript execution)"]
+        SCTX["lib/story-context.ts<br/>Narrative extraction"]
+    end
+
+    subgraph "Data Stores"
+        DB["MySQL 8<br/>Users, Books, Chapters<br/>Sections, Analyses, Cache"]
+        VDB["Qdrant<br/>story_context collection<br/>archive_cache collection"]
+    end
+
+    subgraph "LLM Providers (choose one)"
+        LOCAL["llama.cpp<br/>Qwen3-8B-GGUF Q4_K_M"]
+        OPENAI["OpenAI API<br/>gpt-4o-mini"]
+        GEMINI["Gemini API<br/>gemini-2.5-flash"]
+    end
+
+    REACT --> RSC
+    REACT --> TIPTAP
+    RSC --> PRISMA --> DB
+    RSC --> IRON
+    APIROUTES --> LLMCLIENT
+    LLMCLIENT --> LOCAL
+    LLMCLIENT --> OPENAI
+    LLMCLIENT --> GEMINI
+    APIROUTES --> EMBED --> VDB
+    TSX --> SCTX
+    SCTX --> LLMCLIENT
+    SCTX --> EMBED
+
+%% ============================================================
+%% 2. DATA MODEL — Prisma schema relationships
+%% ============================================================
+
+---
+title: "Data Model (Prisma Schema)"
+---
+erDiagram
+    User ||--o{ Book : "owns"
+    User ||--o{ ArchiveQuery : "makes"
+    User {
+        int id PK
+        string email UK
+        string password
+        enum role "ADMINISTRATOR | CREATOR | VIEWER"
+        boolean active
+        boolean emailVerified
+    }
+
+    Book ||--o{ Chapter : "contains"
+    Book ||--o{ ArchiveQuery : "scoped to"
+    Book ||--o{ SectionAnalysis : "analyzed in"
+    Book {
+        int id PK
+        string title
+        string description
+        json styleConfig "h1/h2/h3/body/blockquote fonts"
+        int userId FK
+    }
+
+    Chapter ||--o{ ChapterSection : "contains"
+    Chapter {
+        int id PK
+        string title
+        int order
+        int bookId FK
+    }
+
+    ChapterSection ||--o| SectionAnalysis : "has analysis"
+    ChapterSection ||--o{ ArchiveQuery : "context for"
+    ChapterSection {
+        int id PK
+        string title
+        json content "TipTap JSON document"
+        int order
+        int chapterId FK
+    }
+
+    SectionAnalysis {
+        int id PK
+        int sectionId FK-UK
+        int bookId FK
+        string contentHash "SHA-256 of plaintext"
+        string plainText
+        json extractedData "StoryContextExtraction"
+        string status "pending | processing | completed | failed"
+        string qdrantPointId "UUID in Qdrant"
+    }
+
+    CachedResponse ||--o{ ArchiveQuery : "serves"
+    CachedResponse {
+        int id PK
+        string query
+        string queryHash UK "SHA-256 for exact dedup"
+        json response "KnowledgeResponse"
+        string searchableText "flattened for fulltext"
+        boolean refusal
+        int hitCount
+    }
+
+    ArchiveQuery {
+        int id PK
+        int userId FK
+        int bookId FK
+        int sectionId FK "nullable"
+        int cachedResponseId FK
+    }
+
+%% ============================================================
+%% 3. AUTHENTICATION FLOW
+%% ============================================================
+
+---
+title: "Authentication & Authorization Flow"
+---
+sequenceDiagram
+    participant B as Browser
+    participant MW as Middleware (proxy.ts)
+    participant P as Page / API Route
+    participant S as iron-session
+    participant DB as MySQL
+
+    Note over B,DB: Registration
+    B->>P: POST /auth/register (email, password)
+    P->>DB: Create User (bcrypt hash, verification token)
+    P->>B: Redirect to /auth/check-email
+    B->>P: GET /auth/verify-email?token=xxx
+    P->>DB: Set emailVerified = true
+    P->>B: Redirect to /auth/login
+
+    Note over B,DB: Login
+    B->>P: POST /auth/login (email, password)
+    P->>DB: Find user, verify bcrypt, check active + verified
+    P->>S: createSession(userId, email, role)
+    S->>B: Set encrypted cookie (nwa_session, 7-day TTL)
+    B->>B: Redirect to /dashboard
+
+    Note over B,DB: Authenticated Request
+    B->>MW: GET /dashboard/* (cookie attached)
+    MW->>S: Decrypt cookie, read session
+    alt Not logged in
+        MW->>B: Redirect to /auth/login
+    else Admin route + not ADMINISTRATOR
+        MW->>B: Redirect with permission error
+    else Authorized
+        MW->>P: Forward request
+        P->>S: getCurrentUser() reads session
+        P->>DB: Fetch user-scoped data
+        P->>B: Render page
+    end
+
+%% ============================================================
+%% 4. STORY CONTEXT WORKER — Background processing pipeline
+%% ============================================================
+
+---
+title: "Story Context Worker — Background Processing Loop"
+---
+flowchart TD
+    START(["Worker starts<br/><i>npm run dev:worker</i>"]) --> RECOVER
+
+    RECOVER["Recover stuck sections<br/><i>status=processing AND updatedAt &lt; 10min ago</i><br/>→ mark as failed"] --> FIND
+
+    FIND["Find sections needing analysis<br/>1. Never analyzed (no SectionAnalysis record)<br/>2. Previously failed (status=failed)<br/>3. Content changed (SHA-256 mismatch)"] --> CHECK_EMPTY
+
+    CHECK_EMPTY{Queue empty?}
+    CHECK_EMPTY -- "Yes" --> SLEEP_POLL["Sleep 5s<br/>(POLL_SLEEP_MS)"] --> RECOVER
+    CHECK_EMPTY -- "No" --> PROCESS
+
+    PROCESS["processSection(sectionId, bookId)"] --> EXTRACT_TEXT
+
+    EXTRACT_TEXT["Extract plaintext from TipTap JSON<br/><i>lib/tiptap-utils.ts</i>"] --> CHECK_LENGTH
+
+    CHECK_LENGTH{Text &lt; 50 chars?}
+    CHECK_LENGTH -- "Yes" --> MARK_NON_NARRATIVE["Mark as completed<br/>is_narrative: false"] --> NEXT_SECTION
+    CHECK_LENGTH -- "No" --> CLAIM
+
+    CLAIM["Atomic claim: set status=processing<br/><i>findUnique + updateMany guard</i>"] --> LLM_CALL
+
+    LLM_CALL["LLM structured extraction<br/><i>llmComplete&lt;StoryContextExtraction&gt;</i><br/>temperature: 0.2, max_tokens: 1500"] --> EMBED
+
+    EMBED["Build composite text from extraction<br/>Embed with all-MiniLM-L6-v2<br/>(384-dim vector)"] --> QDRANT_UPSERT
+
+    QDRANT_UPSERT["Upsert vector to Qdrant<br/>collection: story_context<br/>payload: bookId, sectionId, characters,<br/>locations, themes, contentHash"] --> DB_UPDATE
+
+    DB_UPDATE["Update MySQL<br/>status=completed<br/>extractedData=extraction JSON<br/>qdrantPointId=UUID"] --> NEXT_SECTION
+
+    NEXT_SECTION{More sections?}
+    NEXT_SECTION -- "Yes" --> PROCESS
+    NEXT_SECTION -- "No" --> RECOVER
+
+    LLM_CALL -- "Error" --> ERROR_HANDLER
+
+    ERROR_HANDLER{LLM error?<br/><i>timeout, 502, 503,<br/>ECONNREFUSED</i>}
+    ERROR_HANDLER -- "Yes" --> HEALTH_CHECK["Single health check<br/>after brief pause"]
+    ERROR_HANDLER -- "No (other error)" --> MARK_FAILED["Mark section as failed<br/>with error message"] --> NEXT_SECTION
+
+    HEALTH_CHECK --> HEALTH_OK{LLM healthy?}
+    HEALTH_OK -- "Yes" --> RECOVER
+    HEALTH_OK -- "No" --> COOLDOWN["Cooldown sleep<br/>(COOLDOWN_AFTER_FAILURE_MS)"] --> RECOVER
+
+%% ============================================================
+%% 5. KNOWLEDGE ASSISTANT — General research query pipeline
+%% ============================================================
+
+---
+title: "Knowledge Assistant — Query Pipeline"
+---
+flowchart TD
+    USER_QUERY["User submits query<br/>POST /api/knowledge-assistant"] --> AUTH_CHECK
+
+    AUTH_CHECK["Verify auth + CREATOR/ADMIN role<br/>Verify book ownership"] --> POLICY
+
+    POLICY["Policy filter<br/><i>policyFilter(query)</i>"]
+    POLICY -- "Blocked<br/>(creative writing, harmful)" --> REFUSE["Return refusal response"]
+    POLICY -- "Allowed" --> FOLLOWUP
+
+    FOLLOWUP{Has conversation context?}
+    FOLLOWUP -- "Yes" --> RESOLVE["resolveFollowUpQuery()<br/>LLM converts follow-up into<br/>standalone query"]
+    FOLLOWUP -- "No" --> CACHE_LOOKUP
+    RESOLVE --> CACHE_LOOKUP
+
+    CACHE_LOOKUP["findOrCreateCachedResponse()"] --> TIER1
+
+    subgraph "Three-Tier Cache"
+        TIER1["Tier 1: Exact match<br/>SHA-256(normalized query)"]
+        TIER1 -- "Hit" --> CACHE_HIT["Increment hitCount<br/>Return cached response"]
+        TIER1 -- "Miss" --> TIER2
+
+        TIER2["Tier 2: Semantic similarity<br/>Embed query → search Qdrant<br/>collection: archive_cache<br/>threshold: 0.85"]
+        TIER2 -- "Hit" --> CACHE_HIT
+        TIER2 -- "Miss" --> TIER3
+
+        TIER3["Tier 3: Fresh LLM call<br/>callKnowledgeAssistant()"]
+        TIER3 --> PERSIST["Store in MySQL + Qdrant<br/>(queryHash, embedding, response)"]
+    end
+
+    CACHE_HIT --> ARCHIVE
+    PERSIST --> ARCHIVE
+
+    ARCHIVE["Create ArchiveQuery record<br/>(userId, bookId, sectionId, cachedResponseId)"] --> RETURN
+
+    RETURN["Return KnowledgeResponse<br/>answer_bullets, definitions_and_scope,<br/>uncertainty_assumptions,<br/>common_misconceptions,<br/>writer_hooks, verification_keywords"]
+
+%% ============================================================
+%% 6. BOOK QUERY — Agentic story context query pipeline
+%% ============================================================
+
+---
+title: "Agentic Book Query Pipeline"
+---
+flowchart TD
+    QUERY["User asks about their book<br/>POST /api/story-context/query"] --> CLASSIFY
+
+    CLASSIFY["Query classification<br/><i>classifyQuery()</i>"]
+
+    subgraph "Classification Logic"
+        HEURISTIC["Fast-path heuristics<br/>'my book', 'my character' → book<br/>'what is X', factual patterns → general"]
+        LLM_CLASS["LLM classification<br/>Returns {mode, confidence}"]
+        HEURISTIC -- "Ambiguous" --> LLM_CLASS
+    end
+
+    CLASSIFY --> HEURISTIC
+
+    HEURISTIC -- "general" --> REDIRECT["Redirect to<br/>Knowledge Assistant"]
+    LLM_CLASS -- "general" --> REDIRECT
+    HEURISTIC -- "book" --> COMPLEXITY
+    LLM_CLASS -- "book" --> COMPLEXITY
+
+    COMPLEXITY{"Complex query?<br/><i>Pattern matching:</i><br/>compare, contrast, progression,<br/>plot hole, across chapters,<br/>all characters, timeline"}
+
+    COMPLEXITY -- "Simple" --> SIMPLE
+    COMPLEXITY -- "Complex" --> COMPLEX
+
+    subgraph SIMPLE["Simple Path"]
+        S1["LLM generates 1-3 search queries<br/><i>prepareSearchQueries()</i>"]
+        S2["Embed each query → search Qdrant<br/>collection: story_context<br/>filter: bookId, threshold: 0.55"]
+        S3["Load SectionAnalysis for matches<br/>Deduplicate by sectionId"]
+        S4["Sort chronologically<br/>(chapter order → section order)"]
+        S5["LLM synthesizes answer<br/>from gathered context<br/>(max ~4000 chars)"]
+        S1 --> S2 --> S3 --> S4 --> S5
+    end
+
+    subgraph COMPLEX["Complex Path (Iterative)"]
+        C1["LLM generates sub-queries<br/>targeting different facets"]
+        C2["Search each sub-query independently<br/>Accumulate unique sections<br/>(up to maxSteps: 3)"]
+        C3{"Found &lt; 2 sections?"}
+        C4["Fallback: search with<br/>original unmodified query"]
+        C5["Sort all sections chronologically"]
+        C6["LLM synthesizes with<br/>cross-referencing instructions"]
+        C1 --> C2 --> C3
+        C3 -- "Yes" --> C4 --> C5
+        C3 -- "No" --> C5
+        C5 --> C6
+    end
+
+    SIMPLE --> RESPONSE
+    COMPLEX --> RESPONSE
+
+    RESPONSE["BookQueryResponse<br/>- answer (cited text)<br/>- evidence[] (sectionId, chapter, excerpt)<br/>- gaps[] (missing information)<br/>- suggestions[] (follow-up questions)<br/>- confidence: high | medium | low"]
+
+    RESPONSE --> CACHE_RESP["Cache with book fingerprint<br/><i>SHA-256(all contentHashes)</i><br/>Auto-invalidates when<br/>any section changes"]
+
+%% ============================================================
+%% 7. EDITOR DATA FLOW — How edits propagate through the system
+%% ============================================================
+
+---
+title: "Editor Data Flow — From Keystroke to Searchable Knowledge"
+---
+sequenceDiagram
+    participant W as Writer (Browser)
+    participant E as TipTap Editor
+    participant SA as Server Action
+    participant DB as MySQL
+    participant WK as Background Worker
+    participant LLM as LLM Provider
+    participant EMB as Embedding Model
+    participant Q as Qdrant
+
+    W->>E: Type text
+    Note over E: Auto-save debounce (2s)
+    E->>SA: updateSection(sectionId, content JSON)
+    SA->>DB: UPDATE ChapterSection SET content=?, updatedAt=NOW()
+
+    Note over WK: Poll cycle (every 5s)
+    WK->>DB: Find sections where updatedAt < (now - 30s)<br/>AND (no analysis OR failed OR content changed)
+    DB-->>WK: Section list
+
+    WK->>DB: Set SectionAnalysis.status = 'processing'
+    WK->>LLM: Extract narrative elements (structured JSON)
+    LLM-->>WK: StoryContextExtraction
+
+    WK->>EMB: Embed composite text
+    EMB-->>WK: 384-dim vector
+
+    WK->>Q: Upsert vector + payload
+    WK->>DB: status=completed, extractedData=JSON, qdrantPointId=UUID
+
+    Note over W: Later, writer asks a question
+    W->>SA: "Who is Elena?"
+    SA->>LLM: Classify query → book mode
+    SA->>LLM: Decompose into search queries
+    SA->>EMB: Embed search queries
+    SA->>Q: Semantic search (bookId filter)
+    Q-->>SA: Matching section vectors
+    SA->>DB: Load SectionAnalysis.extractedData for matches
+    SA->>LLM: Synthesize answer from context
+    LLM-->>SA: BookQueryResponse
+    SA-->>W: Answer with evidence, gaps, suggestions
+
+%% ============================================================
+%% 8. LLM CLIENT — Provider abstraction
+%% ============================================================
+
+---
+title: "LLM Client — Provider Routing (lib/llm-client.ts)"
+---
+flowchart LR
+    CALLER["Application code<br/>llmComplete() or llmCompleteText()"] --> CONFIG
+
+    CONFIG["getConfig()<br/>Read LLM_PROVIDER env var"]
+
+    CONFIG --> LOCAL_PATH
+    CONFIG --> OPENAI_PATH
+    CONFIG --> GEMINI_PATH
+
+    subgraph LOCAL_PATH["LLM_PROVIDER = local"]
+        L_URL["Base URL: http://127.0.0.1:8080"]
+        L_MODEL["Model: Qwen/Qwen3-8B-GGUF:Q4_K_M"]
+        L_PATH["Path: /v1/chat/completions"]
+        L_AUTH["Auth: none"]
+    end
+
+    subgraph OPENAI_PATH["LLM_PROVIDER = openai"]
+        O_URL["Base URL: https://api.openai.com"]
+        O_MODEL["Model: gpt-4o-mini"]
+        O_PATH["Path: /v1/chat/completions"]
+        O_AUTH["Auth: Bearer LLM_API_KEY"]
+    end
+
+    subgraph GEMINI_PATH["LLM_PROVIDER = gemini"]
+        G_URL["Base URL: generativelanguage.googleapis.com/v1beta/openai"]
+        G_MODEL["Model: gemini-2.5-flash"]
+        G_PATH["Path: /chat/completions"]
+        G_AUTH["Auth: Bearer LLM_API_KEY"]
+    end
+
+    LOCAL_PATH --> FETCH
+    OPENAI_PATH --> FETCH
+    GEMINI_PATH --> FETCH
+
+    FETCH["fetch() with:<br/>- AbortController timeout<br/>- JSON schema for structured output<br/>- 2-attempt retry (llmComplete)<br/>- 1 attempt (llmCompleteText)"]
+
+%% ============================================================
+%% 9. REVIEWER TESTING GUIDE — Key paths to verify
+%% ============================================================
+%%
+%% To test the application end-to-end:
+%%
+%% 1. SETUP
+%%    mysql -u root -e "CREATE DATABASE writerassistant CHARACTER SET utf8mb4"
+%%    npm install
+%%    cp .env.example .env   (configure DATABASE_URL, SESSION_SECRET, LLM_PROVIDER, LLM_API_KEY)
+%%    npx prisma migrate dev
+%%    npm run add-admin admin@test.com Password123! Admin
+%%    npm run dev
+%%
+%% 2. AUTH FLOW
+%%    - Visit http://localhost:3000 → should redirect to /auth/login
+%%    - Login with admin credentials → should reach /dashboard
+%%    - Verify dashboard shows stats (0 books)
+%%
+%% 3. BOOK CREATION
+%%    - Go to /dashboard/books → click "New Book"
+%%    - Create manually OR import a .txt/.pdf/.docx file
+%%    - Verify chapters and sections appear in editor
+%%
+%% 4. EDITING
+%%    - Select a section → type text in TipTap editor
+%%    - Wait 2s → verify auto-save (no explicit save button)
+%%    - Change fonts in book details → verify editor updates
+%%
+%% 5. STORY CONTEXT ANALYSIS
+%%    - After editing, check worker terminal output for processing logs
+%%    - Query: SELECT status, COUNT(*) FROM SectionAnalysis GROUP BY status
+%%    - After ~30s idle + worker cycle, sections should be "completed"
+%%    - Verify Qdrant has vectors: curl http://localhost:6333/collections/story_context
+%%
+%% 6. KNOWLEDGE ASSISTANT
+%%    - Open the floating panel in the editor (brain icon)
+%%    - Test general query: "What is the Silk Road?" → should return structured facts
+%%    - Repeat same query → should return instantly (cache hit)
+%%    - Test book query: "Who are the characters in my book?" → should return extracted data
+%%    - Verify evidence links navigate to correct sections
+%%
+%% 7. QUERY CLASSIFICATION
+%%    - "my character Elena" → should classify as book mode
+%%    - "history of medieval castles" → should classify as general mode
+%%    - Verify mode badge appears and override buttons work
+%%
+%% 8. USER MANAGEMENT (admin only)
+%%    - Navigate to /dashboard/users
+%%    - Create a CREATOR user via CLI: npm run add-user writer@test.com Pass123! Writer
+%%    - Verify user appears in list
+%%    - Toggle user active/inactive, change role
+%%
+%% 9. EDGE CASES
+%%    - Stop Docker (docker compose down) → verify app degrades gracefully
+%%    - Submit empty section → should mark as non-narrative, not crash
+%%    - Submit policy-violating query ("write me a scene") → should return refusal
+%%    - Kill worker mid-processing → after restart, stuck sections should recover
