@@ -12,14 +12,14 @@ import { processSection } from '../lib/story-context';
 import { checkLlmHealth } from '../lib/llm-client';
 import { extractPlainText } from '../lib/tiptap-utils';
 
-// ── Configuration ──
+// ── Configuration (env overrides supported) ──
 
-const IDLE_THRESHOLD_MS = 30_000;           // Section must be idle 30s before processing
-const POLL_SLEEP_MS = 5_000;                // Sleep between polls when queue is empty
-const STUCK_THRESHOLD_MS = 10 * 60_000;     // 10 minutes → recover stuck sections
-const HEALTH_CHECK_INTERVAL_MS = 10_000;    // Check LLM health every 10s during outage
-const HEALTH_CHECK_MAX_MS = 5 * 60_000;     // Give up health checks after 5 min
-const COOLDOWN_AFTER_FAILURE_MS = 60_000;   // Sleep after health check gives up
+const IDLE_THRESHOLD_MS = Number(process.env.IDLE_THRESHOLD_MS) || 30_000;
+const POLL_SLEEP_MS = Number(process.env.POLL_SLEEP_MS) || 5_000;
+const STUCK_THRESHOLD_MS = Number(process.env.STUCK_THRESHOLD_MS) || 10 * 60_000;
+const HEALTH_CHECK_INTERVAL_MS = Number(process.env.HEALTH_CHECK_INTERVAL_MS) || 10_000;
+const HEALTH_CHECK_MAX_MS = Number(process.env.HEALTH_CHECK_MAX_MS) || 5 * 60_000;
+const COOLDOWN_AFTER_FAILURE_MS = Number(process.env.COOLDOWN_AFTER_FAILURE_MS) || 60_000;
 
 // ── Shutdown Handling ──
 
@@ -46,6 +46,24 @@ function setupShutdownHandlers() {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+
+  const parts: string[] = [error.message];
+
+  // Include cause chain for fetch/network errors
+  if ('cause' in error && error.cause instanceof Error) {
+    parts.push(`cause: ${error.cause.message}`);
+  }
+
+  // Include HTTP status if available
+  if ('status' in error && typeof (error as any).status === 'number') {
+    parts.push(`status: ${(error as any).status}`);
+  }
+
+  return parts.join(' — ');
 }
 
 function isLlmError(error: unknown): boolean {
@@ -136,30 +154,13 @@ async function findSectionsNeedingAnalysis(): Promise<PendingSection[]> {
   return needsAnalysis;
 }
 
-// ── LLM Health Check Loop ──
-
-async function waitForLlmHealth(): Promise<boolean> {
-  console.log('[worker] LLM appears down, starting health checks...');
-  const deadline = Date.now() + HEALTH_CHECK_MAX_MS;
-
-  while (Date.now() < deadline && !shuttingDown) {
-    await sleep(HEALTH_CHECK_INTERVAL_MS);
-    const healthy = await checkLlmHealth();
-    if (healthy) {
-      console.log('[worker] LLM is back online');
-      return true;
-    }
-  }
-
-  console.warn('[worker] LLM health check timed out, cooling down...');
-  return false;
-}
-
 // ── Main Loop ──
 
 async function run() {
   setupShutdownHandlers();
   console.log('[worker] Story context worker started');
+
+  let consecutiveFailures = 0;
 
   while (!shuttingDown) {
     try {
@@ -173,6 +174,7 @@ async function run() {
       const sections = await findSectionsNeedingAnalysis();
 
       if (sections.length === 0) {
+        consecutiveFailures = 0;
         await sleep(POLL_SLEEP_MS);
         continue;
       }
@@ -186,13 +188,20 @@ async function run() {
         try {
           await processSection(section.id, section.bookId);
           console.log(`[worker] Processed section ${section.id} (book ${section.bookId})`);
+          consecutiveFailures = 0;
         } catch (error) {
-          console.error(`[worker] Failed section ${section.id}:`, error instanceof Error ? error.message : error);
+          console.error(`[worker] Failed section ${section.id}: ${formatError(error)}`);
 
-          // If it looks like an LLM outage, wait for recovery
           if (isLlmError(error)) {
-            const recovered = await waitForLlmHealth();
-            if (!recovered) {
+            consecutiveFailures++;
+            // Brief pause, then check health once — don't loop for remote providers
+            console.log(`[worker] LLM error (attempt ${consecutiveFailures}), checking health...`);
+            await sleep(HEALTH_CHECK_INTERVAL_MS);
+            const healthy = await checkLlmHealth();
+            if (healthy) {
+              console.log('[worker] LLM health OK, likely a transient error — retrying');
+            } else {
+              console.warn('[worker] LLM unreachable, cooling down...');
               await sleep(COOLDOWN_AFTER_FAILURE_MS);
             }
             break; // Re-poll to get fresh list
@@ -203,7 +212,7 @@ async function run() {
 
       // Queue had items — immediately re-poll to catch newly idle sections
     } catch (error) {
-      console.error('[worker] Cycle error:', error instanceof Error ? error.message : error);
+      console.error(`[worker] Cycle error: ${formatError(error)}`);
       await sleep(POLL_SLEEP_MS);
     }
   }

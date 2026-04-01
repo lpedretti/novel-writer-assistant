@@ -12,6 +12,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "echo 'No tests specified'",
+    "add-user": "node scripts/add-user.js",
     "add-admin": "node scripts/add-admin.js",
     "change-password": "node scripts/change-password.js",
     "change-role": "node scripts/change-role.js",

@@ -14,7 +14,7 @@ export interface SessionData {
 // Session configuration
 export const sessionOptions: SessionOptions = {
   password: process.env.SESSION_SECRET as string,
-  cookieName: 'reverie_session',
+  cookieName: 'nwa_session',
   cookieOptions: {
     httpOnly: true, // Cookie cannot be accessed by client-side JavaScript
     secure: process.env.NODE_ENV === 'production', // HTTPS only in production

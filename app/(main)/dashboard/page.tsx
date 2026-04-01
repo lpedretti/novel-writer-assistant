@@ -1,8 +1,9 @@
+import { Suspense } from 'react';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/session';
 import Link from 'next/link';
 
-export default async function Dashboard() {
+async function DashboardContent() {
   const user = await requireAuth();
 
   const [totalBooks, recentBooks] = await Promise.all([
@@ -89,5 +90,38 @@ export default async function Dashboard() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function Dashboard() {
+  return (
+    <Suspense fallback={
+      <div className="max-w-6xl mx-auto">
+        <div className="mb-8">
+          <div className="h-9 w-64 bg-base-300 rounded animate-pulse" />
+          <div className="h-4 w-48 bg-base-300 rounded animate-pulse mt-2" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="card bg-base-100 shadow-md border border-base-300">
+              <div className="card-body">
+                <div className="h-4 w-20 bg-base-300 rounded animate-pulse" />
+                <div className="h-9 w-16 bg-base-300 rounded animate-pulse mt-2" />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="card bg-base-100 shadow-md border border-base-300">
+          <div className="card-body">
+            <div className="h-6 w-32 bg-base-300 rounded animate-pulse mb-4" />
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="h-12 bg-base-200 rounded-lg animate-pulse mb-3" />
+            ))}
+          </div>
+        </div>
+      </div>
+    }>
+      <DashboardContent />
+    </Suspense>
   );
 }

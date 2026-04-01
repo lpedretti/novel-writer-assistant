@@ -277,25 +277,29 @@ export async function processSection(sectionId: number, bookId: number): Promise
   }
 
   // Mark as processing (atomic guard against concurrent processing)
-  // First try to create or get the existing record
-  const existing = await prisma.sectionAnalysis.upsert({
+  const existing = await prisma.sectionAnalysis.findUnique({
     where: { sectionId },
-    create: { sectionId, bookId, contentHash, plainText, extractedData: {}, status: 'processing' },
-    update: {}, // Don't update yet — we need to check status first
+    select: { status: true, qdrantPointId: true },
   });
 
-  // Atomic status transition: only proceed if not already processing
-  if (existing.status === 'processing') {
+  if (existing?.status === 'processing') {
     return; // Another process is handling this section
   }
 
-  const updated = await prisma.sectionAnalysis.updateMany({
-    where: { sectionId, status: { not: 'processing' } },
-    data: { status: 'processing', errorMessage: null },
-  });
-
-  if (updated.count === 0) {
-    return; // Lost the race — another process claimed it
+  if (existing) {
+    // Atomic status transition for existing records
+    const updated = await prisma.sectionAnalysis.updateMany({
+      where: { sectionId, status: { not: 'processing' } },
+      data: { status: 'processing', errorMessage: null },
+    });
+    if (updated.count === 0) {
+      return; // Lost the race — another process claimed it
+    }
+  } else {
+    // New record — we're claiming this section
+    await prisma.sectionAnalysis.create({
+      data: { sectionId, bookId, contentHash, plainText, extractedData: {}, status: 'processing' },
+    });
   }
 
   try {
@@ -319,7 +323,7 @@ export async function processSection(sectionId: number, bookId: number): Promise
     const embedding = await embed(compositeText);
 
     // Generate or reuse Qdrant point ID
-    const qdrantPointId = existing.qdrantPointId || randomUUID();
+    const qdrantPointId = existing?.qdrantPointId || randomUUID();
 
     // Upsert to Qdrant
     await upsertVector(
